@@ -534,6 +534,8 @@ setInterval(spawnWanderingNPC, 8000);
 
 // --- Boot sequence ---
 createScene().then(async () => {
+  console.log("GLTF loader registered:", BABYLON.SceneLoader.IsPluginForExtensionAvailable(".glb"));
+
   await loadNPCModel();
   createCarDealer();
   subscribeOthers();
@@ -541,3 +543,4 @@ createScene().then(async () => {
 });
 
 window.addEventListener("resize", () => engine.resize());
+
