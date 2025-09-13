@@ -16,8 +16,10 @@ const db = firebase.firestore();
 // --- Player State ---
 const uid = "player_" + Math.floor(Math.random() * 1e6);
 const username = "Guest" + Math.floor(Math.random() * 999);
-let playerCash = 100;
+let playerCash = 1000;
 let playerInventory = [];
+let ownedCars = [];
+let currentVehicle = null;
 const others = new Map();
 const smooth = new Map();
 
@@ -49,7 +51,8 @@ function publishTransform() {
     z: pos.z,
     ry: rotY,
     cash: playerCash,
-    inventory: playerInventory
+    inventory: playerInventory,
+    cars: ownedCars
   });
 }
 
@@ -86,6 +89,241 @@ function updateOthers() {
   }
 }
 
+// --- Create Scene ---
+async function createScene() {
+  scene = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0.02, 0.02, 0.05, 1);
+  scene.collisionsEnabled = true;
+  scene.gravity = new BABYLON.Vector3(0, -0.1, 0);
+
+  // Player mesh
+  playerMesh = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: 1.8, radius: 0.4 }, scene);
+  playerMesh.checkCollisions = true;
+  playerMesh.ellipsoid = new BABYLON.Vector3(0.4, 0.9, 0.4);
+  playerMesh.applyGravity = true;
+
+  // Camera
+  camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 0.8, 0), scene);
+  camera.minZ = 0.05;
+  camera.fov = BABYLON.Tools.ToRadians(75);
+  camera.inertia = 0.1;
+  camera.angularSensibility = 500;
+  camera.attachControl(canvas, true);
+  camera.parent = playerMesh;
+  canvas.addEventListener("click", () => canvas.requestPointerLock?.());
+
+  // Lighting
+  new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+
+  // Ground
+  const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 300, height: 300 }, scene);
+  const gMat = new BABYLON.StandardMaterial("gmat", scene);
+  gMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.12);
+  ground.material = gMat;
+  ground.checkCollisions = true;
+
+  // Roads
+  const roadMat = new BABYLON.StandardMaterial("roadMat", scene);
+  roadMat.diffuseColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+  for (let i = -100; i <= 100; i += 20) {
+    const road = BABYLON.MeshBuilder.CreateBox("road" + i, { width: 8, height: 0.1, depth: 20 }, scene);
+    road.position.set(i, 0.05, 0);
+    road.material = roadMat;
+    road.checkCollisions = true;
+  }
+
+  // Street Lamps
+  for (let i = -80; i <= 80; i += 20) {
+    const pole = BABYLON.MeshBuilder.CreateCylinder("lampPole" + i, { height: 5, diameter: 0.2 }, scene);
+    pole.position.set(i, 2.5, 4);
+    const light = new BABYLON.PointLight("lampLight" + i, new BABYLON.Vector3(i, 5, 4), scene);
+    light.intensity = 0.8;
+    light.diffuse = new BABYLON.Color3(1, 1, 0.8);
+  }
+
+  // Benches
+  for (let i = -60; i <= 60; i += 30) {
+    const bench = BABYLON.MeshBuilder.CreateBox("bench" + i, { width: 2, height: 0.5, depth: 0.5 }, scene);
+    bench.position.set(i, 0.25, -5);
+    const bMat = new BABYLON.StandardMaterial("bMat" + i, scene);
+    bMat.diffuseColor = new BABYLON.Color3(0.4, 0.2, 0.1);
+    bench.material = bMat;
+  }
+
+  // Trees
+  for (let i = -80; i <= 80; i += 40) {
+    const trunk = BABYLON.MeshBuilder.CreateCylinder("trunk" + i, { height: 2, diameter: 0.4 }, scene);
+    trunk.position.set(i, 1, -10);
+    const leaves = BABYLON.MeshBuilder.CreateSphere("leaves" + i, { diameter: 3 }, scene);
+    leaves.position.set(i, 3, -10);
+    const leafMat = new BABYLON.StandardMaterial("leafMat" + i, scene);
+    leafMat.diffuseColor = new BABYLON.Color3(0.1, 0.5, 0.1);
+    leaves.material = leafMat;
+  }
+}
+// --- Car Dealer Setup ---
+let carDealerTrigger = null;
+let carDealerUI = null;
+let carDealerOpen = false;
+
+const carModels = [
+  { id: "sedan", name: "Sedan", price: 500, color: new BABYLON.Color3(0.2, 0.2, 1) },
+  { id: "sports", name: "Sports Car", price: 1200, color: new BABYLON.Color3(1, 0, 0) },
+  { id: "truck", name: "Pickup Truck", price: 800, color: new BABYLON.Color3(0.3, 0.3, 0.3) }
+];
+
+function createCarDealer() {
+  const dealer = BABYLON.MeshBuilder.CreateBox("carDealer", { width: 10, height: 4, depth: 8 }, scene);
+  dealer.position.set(25, 2, -15);
+  const dMat = new BABYLON.StandardMaterial("dealerMat", scene);
+  dMat.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.2);
+  dealer.material = dMat;
+
+  carDealerTrigger = BABYLON.MeshBuilder.CreateBox("carDealerTrigger", { width: 8, height: 3, depth: 6 }, scene);
+  carDealerTrigger.position.set(25, 1.5, -15);
+  carDealerTrigger.isVisible = false;
+  carDealerTrigger.actionManager = new BABYLON.ActionManager(scene);
+  carDealerTrigger.actionManager.registerAction(
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh }, () => openCarDealerUI())
+  );
+  carDealerTrigger.actionManager.registerAction(
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh }, () => closeCarDealerUI())
+  );
+}
+
+function openCarDealerUI() {
+  if (carDealerOpen) return;
+  carDealerOpen = true;
+  carDealerUI = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("CarDealerUI");
+
+  const panel = new BABYLON.GUI.StackPanel();
+  panel.width = "300px";
+  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+  carDealerUI.addControl(panel);
+
+  const title = new BABYLON.GUI.TextBlock();
+  title.text = "Car Dealer";
+  title.height = "40px";
+  title.color = "white";
+  title.fontSize = 24;
+  panel.addControl(title);
+
+  carModels.forEach(car => {
+    const btn = BABYLON.GUI.Button.CreateSimpleButton(car.id, `${car.name} - $${car.price}`);
+    btn.height = "40px";
+    btn.color = "white";
+    btn.background = "#333";
+    btn.onPointerUpObservable.add(() => buyCar(car));
+    panel.addControl(btn);
+  });
+
+  const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
+  closeBtn.height = "40px";
+  closeBtn.color = "white";
+  closeBtn.background = "#a33";
+  closeBtn.onPointerUpObservable.add(() => closeCarDealerUI());
+  panel.addControl(closeBtn);
+}
+
+function closeCarDealerUI() {
+  if (carDealerUI) {
+    carDealerUI.dispose();
+    carDealerUI = null;
+  }
+  carDealerOpen = false;
+}
+
+function buyCar(car) {
+  if (playerCash >= car.price) {
+    playerCash -= car.price;
+    ownedCars.push(car.id);
+    db.collection("players").doc(uid).set({
+      cash: playerCash,
+      inventory: playerInventory,
+      cars: ownedCars
+    }, { merge: true });
+    spawnCar(car);
+    console.log(`Bought ${car.name}`);
+  } else {
+    console.log("Not enough cash!");
+  }
+}
+
+// --- Car Spawning ---
+function spawnCar(car) {
+  const body = BABYLON.MeshBuilder.CreateBox(car.id + "_body", { width: 2, height: 1, depth: 4 }, scene);
+  body.position = new BABYLON.Vector3(30, 0.5, -10);
+  const mat = new BABYLON.StandardMaterial(car.id + "_mat", scene);
+  mat.diffuseColor = car.color;
+  body.material = mat;
+  body.checkCollisions = true;
+  body.metadata = { type: "car", id: car.id, speed: 0, maxSpeed: 0.5, accel: 0.01, turnSpeed: 0.03 };
+}
+
+// --- Driving System ---
+let driving = false;
+
+function enterCar(carMesh) {
+  currentVehicle = carMesh;
+  driving = true;
+  camera.parent = carMesh;
+  camera.position.set(0, 1.5, -2);
+}
+
+function exitCar() {
+  if (!currentVehicle) return;
+  driving = false;
+  camera.parent = playerMesh;
+  camera.position.set(0, 0.8, 0);
+  currentVehicle = null;
+}
+
+scene?.onBeforeRenderObservable.add(() => {
+  if (driving && currentVehicle) {
+    const input = { f: 0, r: 0 };
+    if (keys["KeyW"]) input.f = 1;
+    if (keys["KeyS"]) input.f = -1;
+    if (keys["KeyA"]) input.r = -1;
+    if (keys["KeyD"]) input.r = 1;
+
+    // Accelerate/Brake
+    if (input.f !== 0) {
+      currentVehicle.metadata.speed += input.f * currentVehicle.metadata.accel;
+      currentVehicle.metadata.speed = BABYLON.Scalar.Clamp(currentVehicle.metadata.speed, -currentVehicle.metadata.maxSpeed, currentVehicle.metadata.maxSpeed);
+    } else {
+      // Natural deceleration
+      currentVehicle.metadata.speed *= 0.95;
+    }
+
+    // Turn
+    if (input.r !== 0) {
+      currentVehicle.rotation.y += input.r * currentVehicle.metadata.turnSpeed;
+    }
+
+    // Move
+    const forwardVec = new BABYLON.Vector3(Math.sin(currentVehicle.rotation.y), 0, Math.cos(currentVehicle.rotation.y));
+    currentVehicle.moveWithCollisions(forwardVec.scale(currentVehicle.metadata.speed));
+  }
+});
+
+// --- Input Tracking ---
+const keys = {};
+window.addEventListener("keydown", e => {
+  keys[e.code] = true;
+  if (e.code === "KeyE") {
+    if (!driving) {
+      // Try to enter nearest car
+      const pick = scene.pickWithRay(new BABYLON.Ray(camera.globalPosition, camera.getForwardRay().direction), mesh => mesh.metadata?.type === "car");
+      if (pick.hit && pick.pickedMesh) {
+        enterCar(pick.pickedMesh);
+      }
+    } else {
+      exitCar();
+    }
+  }
+});
+window.addEventListener("keyup", e => keys[e.code] = false);
 // --- NPC Model Loading ---
 let npcBaseMesh = null;
 async function loadNPCModel() {
@@ -108,8 +346,8 @@ const waypoints = [
   new BABYLON.Vector3(0, 0, 0),
   new BABYLON.Vector3(20, 0, 20),
   new BABYLON.Vector3(-20, 0, 15),
-  new BABYLON.Vector3(10, 0, 10),
-  new BABYLON.Vector3(-12, 0, 8)
+  new BABYLON.Vector3(10, 0, 10),  // supermarket
+  new BABYLON.Vector3(-12, 0, 8)   // card shop
 ];
 
 function pickRandomWaypoint() {
@@ -214,7 +452,7 @@ function openCardShopUI() {
   title.color = "white";
   title.fontSize = 24;
   panel.addControl(title);
-    playerInventory.forEach((itemId, index) => {
+  playerInventory.forEach((itemId, index) => {
     const btn = BABYLON.GUI.Button.CreateSimpleButton("sell_" + index, `Sell ${itemId} (+$5)`);
     btn.height = "40px";
     btn.color = "white";
@@ -222,7 +460,6 @@ function openCardShopUI() {
     btn.onPointerUpObservable.add(() => sellItem(itemId, 5));
     panel.addControl(btn);
   });
-
   const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
   closeBtn.height = "40px";
   closeBtn.color = "white";
@@ -248,200 +485,57 @@ function sellItem(itemId, price) {
       cash: playerCash,
       inventory: playerInventory
     }, { merge: true });
-    console.log(`Sold ${itemId} for $${price}`);
     closeCardShopUI();
     openCardShopUI(); // refresh UI
   }
 }
 
-// --- Create Scene ---
-async function createScene() {
-  scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0.02, 0.02, 0.05, 1);
-  scene.collisionsEnabled = true;
-  scene.gravity = new BABYLON.Vector3(0, -0.1, 0);
-
-  // Player mesh (collision body)
-  playerMesh = BABYLON.MeshBuilder.CreateCapsule("playerBody", { height: 1.8, radius: 0.4 }, scene);
-  playerMesh.checkCollisions = true;
-  playerMesh.ellipsoid = new BABYLON.Vector3(0.4, 0.9, 0.4);
-  playerMesh.applyGravity = true;
-
-  // Camera
-  camera = new BABYLON.UniversalCamera("cam", new BABYLON.Vector3(0, 0.8, 0), scene);
-  camera.minZ = 0.05;
-  camera.fov = BABYLON.Tools.ToRadians(75);
-  camera.inertia = 0.1;
-  camera.angularSensibility = 500;
-  camera.attachControl(canvas, true);
-  camera.parent = playerMesh;
-  canvas.addEventListener("click", () => canvas.requestPointerLock?.());
-
-  // Lighting
-  new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
-
-  // Ground
-  const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 200, height: 200 }, scene);
-  const gMat = new BABYLON.StandardMaterial("gmat", scene);
-  gMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.12);
-  ground.material = gMat;
-  ground.checkCollisions = true;
-
-  // Random buildings
-  for (let i = 0; i < 40; i++) {
-    const b = BABYLON.MeshBuilder.CreateBox("b" + i, { width: 6, height: 12, depth: 6 }, scene);
-    b.position.set((Math.random() - 0.5) * 160, 6, (Math.random() - 0.5) * 160);
-    const m = new BABYLON.StandardMaterial("bm" + i, scene);
-    m.diffuseColor = new BABYLON.Color3(0.15 + Math.random() * 0.2, 0.15, 0.2 + Math.random() * 0.2);
-    b.material = m;
-    b.checkCollisions = true;
-  }
-
-  // HUD
-  const ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
-  const cashText = new BABYLON.GUI.TextBlock();
-  cashText.text = `Cash: $${playerCash}`;
-  cashText.color = "white";
-  cashText.fontSize = 20;
-  cashText.paddingTop = "10px";
-  cashText.paddingLeft = "10px";
-  cashText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-  cashText.textVerticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  ui.addControl(cashText);
-  scene.onBeforeRenderObservable.add(() => {
-    cashText.text = `Cash: $${playerCash}`;
-  });
-
-  // Input mapping
-  const input = { f: 0, r: 0 };
-  scene.onKeyboardObservable.add(k => {
-    const down = k.type === BABYLON.KeyboardEventTypes.KEYDOWN;
-    if (k.event.code === "KeyW") input.f = down ? 1 : (input.f === 1 ? 0 : input.f);
-    if (k.event.code === "KeyS") input.f = down ? -1 : (input.f === -1 ? 0 : input.f);
-    if (k.event.code === "KeyA") input.r = down ? -1 : (input.r === -1 ? 0 : input.r);
-    if (k.event.code === "KeyD") input.r = down ? 1 : (input.r === 1 ? 0 : input.r);
-  });
-
-  // Gamepad look/move
-  scene.onBeforeRenderObservable.add(() => {
-    const gps = navigator.getGamepads?.() || [];
-    for (const gp of gps) {
-      if (!gp) continue;
-      const lx = gp.axes[0] || 0;
-      const ly = gp.axes[1] || 0;
-      const rx = gp.axes[2] || 0;
-      const ry = gp.axes[3] || 0;
-      moveRelative(lx, -ly, 0.15);
-      camera.rotation.y -= rx * 0.03;
-      camera.rotation.x = BABYLON.Scalar.Clamp(camera.rotation.x - ry * 0.02, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+// --- NPC AI Update Loop ---
+scene?.onBeforeRenderObservable.add(() => {
+  const now = Date.now();
+  npcList.forEach((npc, index) => {
+    if (now - npc.spawnTime > npcLifetime) {
+      npc.mesh.dispose();
+      npcList.splice(index, 1);
+      return;
+    }
+    const dir = npc.target.subtract(npc.mesh.position);
+    const dist = dir.length();
+    if (dist > 0.2) {
+      dir.normalize();
+      npc.mesh.moveWithCollisions(dir.scale(npcSpeed));
+      npc.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+      if (npc.walkAnim && !npc.walkAnim.isPlaying) {
+        npc.idleAnim?.stop();
+        npc.walkAnim.start(true);
+      }
+    } else {
+      if (npc.state === "wandering") {
+        if (Math.random() < 0.3) {
+          npc.state = "shopping";
+          npc.target = Math.random() < 0.5 ? waypoints[3] : waypoints[4];
+        } else {
+          npc.target = pickRandomWaypoint();
+        }
+      } else if (npc.state === "shopping") {
+        npc.target = pickRandomWaypoint();
+        npc.state = "wandering";
+      }
+      if (npc.idleAnim && !npc.idleAnim.isPlaying) {
+        npc.walkAnim?.stop();
+        npc.idleAnim.start(true);
+      }
     }
   });
+});
 
-  // Keyboard move
-  scene.onBeforeRenderObservable.add(() => {
-    const dt = scene.getEngine().getDeltaTime() / 16.67;
-    moveRelative(input.r, input.f, 0.15 * dt);
-    publishTransform();
-    updateOthers();
-  });
-
-  // Supermarket
-  const supermarket = BABYLON.MeshBuilder.CreateBox("supermarket", { width: 6, height: 4, depth: 8 }, scene);
-  supermarket.position.set(10, 2, 10);
-  const smMat = new BABYLON.StandardMaterial("smMat", scene);
-  smMat.diffuseColor = new BABYLON.Color3(0.2, 0.6, 0.2);
-  supermarket.material = smMat;
-  const supermarketTrigger = BABYLON.MeshBuilder.CreateBox("supermarketTrigger", { width: 4, height: 3, depth: 4 }, scene);
-  supermarketTrigger.position.set(10, 1.5, 10);
-  supermarketTrigger.isVisible = false;
-  supermarketTrigger.actionManager = new BABYLON.ActionManager(scene);
-  supermarketTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh }, () => openShopUI())
-  );
-  supermarketTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh }, () => closeShopUI())
-  );
-
-  // Card Shop
-  const cardShop = BABYLON.MeshBuilder.CreateBox("cardShop", { width: 5, height: 4, depth: 6 }, scene);
-  cardShop.position.set(-12, 2, 8);
-  const csMat = new BABYLON.StandardMaterial("csMat", scene);
-  csMat.diffuseColor = new BABYLON.Color3(0.6, 0.3, 0.1);
-  cardShop.material = csMat;
-  const cardShopTrigger = BABYLON.MeshBuilder.CreateBox("cardShopTrigger", { width: 4, height: 3, depth: 4 }, scene);
-  cardShopTrigger.position.set(-12, 1.5, 8);
-  cardShopTrigger.isVisible = false;
-  cardShopTrigger.actionManager = new BABYLON.ActionManager(scene);
-  cardShopTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh }, () => openCardShopUI())
-  );
-  cardShopTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh }, () => closeCardShopUI())
-  );
-
-  // NPC AI update loop
-    // NPC AI update loop
-  scene.onBeforeRenderObservable.add(() => {
-    const now = Date.now();
-    npcList.forEach((npc, index) => {
-      if (now - npc.spawnTime > npcLifetime) {
-        npc.mesh.dispose();
-        npcList.splice(index, 1);
-        return;
-      }
-
-      const dir = npc.target.subtract(npc.mesh.position);
-      const dist = dir.length();
-
-      if (dist > 0.2) {
-        // Walking
-        dir.normalize();
-        npc.mesh.moveWithCollisions(dir.scale(npcSpeed));
-        npc.mesh.rotation.y = Math.atan2(dir.x, dir.z);
-
-        if (npc.walkAnim && !npc.walkAnim.isPlaying) {
-          npc.idleAnim?.stop();
-          npc.walkAnim.start(true);
-        }
-      } else {
-        // Arrived at waypoint
-        if (npc.state === "wandering") {
-          if (Math.random() < 0.3) {
-            npc.state = "shopping";
-            npc.target = Math.random() < 0.5 ? waypoints[3] : waypoints[4];
-          } else {
-            npc.target = pickRandomWaypoint();
-          }
-        } else if (npc.state === "shopping") {
-          if (npc.target.equals(waypoints[4]) && playerInventory.length > 0) {
-            const itemIndex = Math.floor(Math.random() * playerInventory.length);
-            const itemId = playerInventory[itemIndex];
-            playerInventory.splice(itemIndex, 1);
-            playerCash += 5;
-            db.collection("players").doc(uid).set({
-              cash: playerCash,
-              inventory: playerInventory
-            }, { merge: true });
-            console.log(`NPC bought ${itemId} for $5`);
-          }
-          npc.target = pickRandomWaypoint();
-          npc.state = "wandering";
-        }
-
-        // Idle animation
-        if (npc.idleAnim && !npc.idleAnim.isPlaying) {
-          npc.walkAnim?.stop();
-          npc.idleAnim.start(true);
-        }
-      }
-    });
-  });
-
-  return scene;
-}
+// --- Spawn NPCs periodically ---
 setInterval(spawnWanderingNPC, 8000);
+
+// --- Boot sequence ---
 createScene().then(async () => {
-  await loadNPCModel(); // load .glb before spawning
+  await loadNPCModel();
+  createCarDealer();
   subscribeOthers();
   engine.runRenderLoop(() => scene.render());
 });
