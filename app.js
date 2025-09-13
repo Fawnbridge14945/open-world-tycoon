@@ -86,6 +86,174 @@ function updateOthers() {
   }
 }
 
+// --- NPC Model Loading ---
+let npcBaseMesh = null;
+async function loadNPCModel() {
+  const result = await BABYLON.SceneLoader.ImportMeshAsync(
+    "",
+    "assets/",
+    "male_npc.glb",
+    scene
+  );
+  npcBaseMesh = result.meshes[0];
+  npcBaseMesh.setEnabled(false);
+}
+
+// --- NPC AI Data ---
+const npcList = [];
+const npcMax = 8;
+const npcSpeed = 0.04;
+const npcLifetime = 60000;
+const waypoints = [
+  new BABYLON.Vector3(0, 0, 0),
+  new BABYLON.Vector3(20, 0, 20),
+  new BABYLON.Vector3(-20, 0, 15),
+  new BABYLON.Vector3(10, 0, 10),
+  new BABYLON.Vector3(-12, 0, 8)
+];
+
+function pickRandomWaypoint() {
+  return waypoints[Math.floor(Math.random() * waypoints.length)];
+}
+
+function spawnWanderingNPC() {
+  if (!npcBaseMesh || npcList.length >= npcMax) return;
+
+  const npc = npcBaseMesh.clone("npc_" + Date.now());
+  npc.setEnabled(true);
+  npc.position = waypoints[Math.floor(Math.random() * 3)].clone();
+
+  // Randomize clothing colors if possible
+  npc.getChildMeshes().forEach(m => {
+    if (m.material) {
+      m.material = m.material.clone();
+      if (m.material.diffuseColor) {
+        m.material.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
+      }
+    }
+  });
+
+  // Grab animations by name
+  const walkAnim = scene.animationGroups.find(a => a.name.toLowerCase().includes("walk"));
+  const idleAnim = scene.animationGroups.find(a => a.name.toLowerCase().includes("idle"));
+
+  npcList.push({
+    mesh: npc,
+    target: pickRandomWaypoint(),
+    state: "wandering",
+    spawnTime: Date.now(),
+    walkAnim: walkAnim ? walkAnim.clone(npc.name + "_walk", npc) : null,
+    idleAnim: idleAnim ? idleAnim.clone(npc.name + "_idle", npc) : null
+  });
+}
+
+// --- Shop UI Functions ---
+let shopUI = null;
+let shopOpen = false;
+const shopItems = [
+  { id: "apple", name: "Apple", price: 5 },
+  { id: "water", name: "Bottle of Water", price: 3 },
+  { id: "bread", name: "Bread Loaf", price: 7 }
+];
+
+function openShopUI() {
+  if (shopOpen) return;
+  shopOpen = true;
+  shopUI = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ShopUI");
+  const panel = new BABYLON.GUI.StackPanel();
+  panel.width = "300px";
+  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+  shopUI.addControl(panel);
+  const title = new BABYLON.GUI.TextBlock();
+  title.text = "Supermarket";
+  title.height = "40px";
+  title.color = "white";
+  title.fontSize = 24;
+  panel.addControl(title);
+  shopItems.forEach(item => {
+    const btn = BABYLON.GUI.Button.CreateSimpleButton(item.id, `${item.name} - $${item.price}`);
+    btn.height = "40px";
+    btn.color = "white";
+    btn.background = "#333";
+    btn.onPointerUpObservable.add(() => buyItem(item));
+    panel.addControl(btn);
+  });
+  const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
+  closeBtn.height = "40px";
+  closeBtn.color = "white";
+  closeBtn.background = "#a33";
+  closeBtn.onPointerUpObservable.add(() => closeShopUI());
+  panel.addControl(closeBtn);
+}
+
+function closeShopUI() { if (shopUI) shopUI.dispose(); shopUI = null; shopOpen = false; }
+function buyItem(item) {
+  if (playerCash >= item.price) {
+    playerCash -= item.price;
+    playerInventory.push(item.id);
+    db.collection("players").doc(uid).set({ cash: playerCash, inventory: playerInventory }, { merge: true });
+  }
+}
+
+// --- Card Shop UI ---
+let cardShopUI = null;
+let cardShopOpen = false;
+function openCardShopUI() {
+  if (cardShopOpen) return;
+  cardShopOpen = true;
+  cardShopUI = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("CardShopUI");
+  const panel = new BABYLON.GUI.StackPanel();
+  panel.width = "300px";
+  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+  cardShopUI.addControl(panel);
+  const title = new BABYLON.GUI.TextBlock();
+  title.text = "Card Shop - Sell Items";
+  title.height = "40px";
+  title.color = "white";
+  title.fontSize = 24;
+  panel.addControl(title);
+    playerInventory.forEach((itemId, index) => {
+    const btn = BABYLON.GUI.Button.CreateSimpleButton("sell_" + index, `Sell ${itemId} (+$5)`);
+    btn.height = "40px";
+    btn.color = "white";
+    btn.background = "#444";
+    btn.onPointerUpObservable.add(() => sellItem(itemId, 5));
+    panel.addControl(btn);
+  });
+
+  const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
+  closeBtn.height = "40px";
+  closeBtn.color = "white";
+  closeBtn.background = "#a33";
+  closeBtn.onPointerUpObservable.add(() => closeCardShopUI());
+  panel.addControl(closeBtn);
+}
+
+function closeCardShopUI() {
+  if (cardShopUI) {
+    cardShopUI.dispose();
+    cardShopUI = null;
+  }
+  cardShopOpen = false;
+}
+
+function sellItem(itemId, price) {
+  const index = playerInventory.indexOf(itemId);
+  if (index !== -1) {
+    playerInventory.splice(index, 1);
+    playerCash += price;
+    db.collection("players").doc(uid).set({
+      cash: playerCash,
+      inventory: playerInventory
+    }, { merge: true });
+    console.log(`Sold ${itemId} for $${price}`);
+    closeCardShopUI();
+    openCardShopUI(); // refresh UI
+  }
+}
+
 // --- Create Scene ---
 async function createScene() {
   scene = new BABYLON.Scene(engine);
@@ -106,7 +274,7 @@ async function createScene() {
   camera.inertia = 0.1;
   camera.angularSensibility = 500;
   camera.attachControl(canvas, true);
-  camera.parent = playerMesh; // follow player body
+  camera.parent = playerMesh;
   canvas.addEventListener("click", () => canvas.requestPointerLock?.());
 
   // Lighting
@@ -169,7 +337,7 @@ async function createScene() {
     }
   });
 
-    // Keyboard move
+  // Keyboard move
   scene.onBeforeRenderObservable.add(() => {
     const dt = scene.getEngine().getDeltaTime() / 16.67;
     moveRelative(input.r, input.f, 0.15 * dt);
@@ -177,55 +345,42 @@ async function createScene() {
     updateOthers();
   });
 
-  // --- Supermarket Building + Trigger ---
+  // Supermarket
   const supermarket = BABYLON.MeshBuilder.CreateBox("supermarket", { width: 6, height: 4, depth: 8 }, scene);
   supermarket.position.set(10, 2, 10);
   const smMat = new BABYLON.StandardMaterial("smMat", scene);
   smMat.diffuseColor = new BABYLON.Color3(0.2, 0.6, 0.2);
   supermarket.material = smMat;
-
   const supermarketTrigger = BABYLON.MeshBuilder.CreateBox("supermarketTrigger", { width: 4, height: 3, depth: 4 }, scene);
   supermarketTrigger.position.set(10, 1.5, 10);
   supermarketTrigger.isVisible = false;
   supermarketTrigger.actionManager = new BABYLON.ActionManager(scene);
   supermarketTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction(
-      { trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh },
-      () => openShopUI()
-    )
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh }, () => openShopUI())
   );
   supermarketTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction(
-      { trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh },
-      () => closeShopUI()
-    )
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh }, () => closeShopUI())
   );
 
-  // --- Card Shop Building + Trigger ---
+  // Card Shop
   const cardShop = BABYLON.MeshBuilder.CreateBox("cardShop", { width: 5, height: 4, depth: 6 }, scene);
   cardShop.position.set(-12, 2, 8);
   const csMat = new BABYLON.StandardMaterial("csMat", scene);
   csMat.diffuseColor = new BABYLON.Color3(0.6, 0.3, 0.1);
   cardShop.material = csMat;
-
   const cardShopTrigger = BABYLON.MeshBuilder.CreateBox("cardShopTrigger", { width: 4, height: 3, depth: 4 }, scene);
   cardShopTrigger.position.set(-12, 1.5, 8);
   cardShopTrigger.isVisible = false;
   cardShopTrigger.actionManager = new BABYLON.ActionManager(scene);
   cardShopTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction(
-      { trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh },
-      () => openCardShopUI()
-    )
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionEnterTrigger, parameter: playerMesh }, () => openCardShopUI())
   );
   cardShopTrigger.actionManager.registerAction(
-    new BABYLON.ExecuteCodeAction(
-      { trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh },
-      () => closeCardShopUI()
-    )
+    new BABYLON.ExecuteCodeAction({ trigger: BABYLON.ActionManager.OnIntersectionExitTrigger, parameter: playerMesh }, () => closeCardShopUI())
   );
 
-  // --- NPC AI update loop (inside createScene) ---
+  // NPC AI update loop
+    // NPC AI update loop
   scene.onBeforeRenderObservable.add(() => {
     const now = Date.now();
     npcList.forEach((npc, index) => {
@@ -234,12 +389,22 @@ async function createScene() {
         npcList.splice(index, 1);
         return;
       }
+
       const dir = npc.target.subtract(npc.mesh.position);
       const dist = dir.length();
+
       if (dist > 0.2) {
+        // Walking
         dir.normalize();
         npc.mesh.moveWithCollisions(dir.scale(npcSpeed));
+        npc.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+        if (npc.walkAnim && !npc.walkAnim.isPlaying) {
+          npc.idleAnim?.stop();
+          npc.walkAnim.start(true);
+        }
       } else {
+        // Arrived at waypoint
         if (npc.state === "wandering") {
           if (Math.random() < 0.3) {
             npc.state = "shopping";
@@ -253,10 +418,20 @@ async function createScene() {
             const itemId = playerInventory[itemIndex];
             playerInventory.splice(itemIndex, 1);
             playerCash += 5;
-            db.collection("players").doc(uid).set({ cash: playerCash, inventory: playerInventory }, { merge: true });
+            db.collection("players").doc(uid).set({
+              cash: playerCash,
+              inventory: playerInventory
+            }, { merge: true });
+            console.log(`NPC bought ${itemId} for $5`);
           }
           npc.target = pickRandomWaypoint();
           npc.state = "wandering";
+        }
+
+        // Idle animation
+        if (npc.idleAnim && !npc.idleAnim.isPlaying) {
+          npc.walkAnim?.stop();
+          npc.idleAnim.start(true);
         }
       }
     });
@@ -264,201 +439,9 @@ async function createScene() {
 
   return scene;
 }
-
-// --- Shop UI Functions ---
-let shopUI = null;
-let shopOpen = false;
-const shopItems = [
-  { id: "apple", name: "Apple", price: 5 },
-  { id: "water", name: "Bottle of Water", price: 3 },
-  { id: "bread", name: "Bread Loaf", price: 7 }
-];
-
-function openShopUI() {
-  if (shopOpen) return;
-  shopOpen = true;
-
-  shopUI = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("ShopUI");
-  const panel = new BABYLON.GUI.StackPanel();
-  panel.width = "300px";
-  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-  shopUI.addControl(panel);
-
-  const title = new BABYLON.GUI.TextBlock();
-  title.text = "Supermarket";
-  title.height = "40px";
-  title.color = "white";
-  title.fontSize = 24;
-  panel.addControl(title);
-
-  shopItems.forEach(item => {
-    const btn = BABYLON.GUI.Button.CreateSimpleButton(item.id, `${item.name} - $${item.price}`);
-    btn.height = "40px";
-    btn.color = "white";
-    btn.background = "#333";
-    btn.onPointerUpObservable.add(() => buyItem(item));
-    panel.addControl(btn);
-  });
-
-  const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
-  closeBtn.height = "40px";
-  closeBtn.color = "white";
-  closeBtn.background = "#a33";
-  closeBtn.onPointerUpObservable.add(() => closeShopUI());
-  panel.addControl(closeBtn);
-}
-
-function closeShopUI() {
-  if (shopUI) {
-    shopUI.dispose();
-    shopUI = null;
-  }
-  shopOpen = false;
-}
-
-function buyItem(item) {
-  if (playerCash >= item.price) {
-    playerCash -= item.price;
-    playerInventory.push(item.id);
-    db.collection("players").doc(uid).set({
-      cash: playerCash,
-      inventory: playerInventory
-    }, { merge: true });
-    console.log(`Bought ${item.name}`);
-  } else {
-    console.log("Not enough cash!");
-  }
-}
-
-// --- Card Shop UI ---
-let cardShopUI = null;
-let cardShopOpen = false;
-
-function openCardShopUI() {
-  if (cardShopOpen) return;
-  cardShopOpen = true;
-
-  cardShopUI = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("CardShopUI");
-  const panel = new BABYLON.GUI.StackPanel();
-  panel.width = "300px";
-  panel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-  panel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-  cardShopUI.addControl(panel);
-
-  const title = new BABYLON.GUI.TextBlock();
-  title.text = "Card Shop - Sell Items";
-  title.height = "40px";
-  title.color = "white";
-  title.fontSize = 24;
-  panel.addControl(title);
-
-  playerInventory.forEach((itemId, index) => {
-    const btn = BABYLON.GUI.Button.CreateSimpleButton("sell_" + index, `Sell ${itemId} (+$5)`);
-    btn.height = "40px";
-    btn.color = "white";
-    btn.background = "#444";
-    btn.onPointerUpObservable.add(() => sellItem(itemId, 5));
-    panel.addControl(btn);
-  });
-
-  const closeBtn = BABYLON.GUI.Button.CreateSimpleButton("close", "Close");
-  closeBtn.height = "40px";
-  closeBtn.color = "white";
-  closeBtn.background = "#a33";
-  closeBtn.onPointerUpObservable.add(() => closeCardShopUI());
-  panel.addControl(closeBtn);
-}
-
-function closeCardShopUI() {
-  if (cardShopUI) {
-    cardShopUI.dispose();
-    cardShopUI = null;
-  }
-  cardShopOpen = false;
-}
-
-function sellItem(itemId, price) {
-  const index = playerInventory.indexOf(itemId);
-  if (index !== -1) {
-    playerInventory.splice(index, 1);
-    playerCash += price;
-    db.collection("players").doc(uid).set({
-      cash: playerCash,
-      inventory: playerInventory
-    }, { merge: true });
-    console.log(`Sold ${itemId} for $${price}`);
-    closeCardShopUI();
-    openCardShopUI(); // refresh UI
-  }
-}
-
-// --- NPC AI Data ---
-const npcList = [];
-const npcMax = 8;
-const npcSpeed = 0.04;
-const npcLifetime = 60000;
-const waypoints = [
-  new BABYLON.Vector3(0, 0, 0),
-  new BABYLON.Vector3(20, 0, 20),
-  new BABYLON.Vector3(-20, 0, 15),
-  new BABYLON.Vector3(10, 0, 10),  // supermarket
-  new BABYLON.Vector3(-12, 0, 8)   // card shop
-];
-
-function spawnWanderingNPC() {
-  if (npcList.length >= npcMax) return;
-
-  // Body
-  const npc = BABYLON.MeshBuilder.CreateCapsule("npc", { height: 1.8, radius: 0.35 }, scene);
-  npc.position = waypoints[Math.floor(Math.random() * 3)].clone();
-
-  // Random colors
-  const skinTones = [
-    new BABYLON.Color3(1, 0.8, 0.6),
-    new BABYLON.Color3(0.9, 0.7, 0.5),
-    new BABYLON.Color3(0.6, 0.45, 0.3),
-    new BABYLON.Color3(0.4, 0.3, 0.2)
-  ];
-  const shirtColors = [
-    new BABYLON.Color3(0.2, 0.6, 1),
-    new BABYLON.Color3(1, 0.2, 0.2),
-    new BABYLON.Color3(0.2, 1, 0.4),
-    new BABYLON.Color3(1, 1, 0.2)
-  ];
-  const pantsColors = [
-    new BABYLON.Color3(0.1, 0.1, 0.1),
-    new BABYLON.Color3(0.3, 0.3, 0.3),
-    new BABYLON.Color3(0.2, 0.2, 0.5)
-  ];
-
-  const mat = new BABYLON.StandardMaterial("npcMat", scene);
-  mat.diffuseColor = shirtColors[Math.floor(Math.random() * shirtColors.length)];
-  npc.material = mat;
-
-  // Hat (20% chance)
-  if (Math.random() < 0.2) {
-    const hat = BABYLON.MeshBuilder.CreateBox("hat", { size: 0.4 }, scene);
-    hat.position.y = 1.2;
-    hat.parent = npc;
-    const hatMat = new BABYLON.StandardMaterial("hatMat", scene);
-    hatMat.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
-    hat.material = hatMat;
-  }
-
-  const target = pickRandomWaypoint();
-  npcList.push({ mesh: npc, target, state: "wandering", spawnTime: Date.now(), animPhase: 0 });
-}
-
-function pickRandomWaypoint() {
-  return waypoints[Math.floor(Math.random() * waypoints.length)];
-}
-
-// --- Spawn NPCs periodically ---
 setInterval(spawnWanderingNPC, 8000);
-
-// --- Boot Scene ---
-createScene().then(() => {
+createScene().then(async () => {
+  await loadNPCModel(); // load .glb before spawning
   subscribeOthers();
   engine.runRenderLoop(() => scene.render());
 });
